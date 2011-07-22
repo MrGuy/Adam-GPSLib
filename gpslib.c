@@ -75,12 +75,12 @@ void processNMEA() {
 	char *NMEA2;
 	nmeaINFO info2;
 	// Fix up the end so the NMEA parser accepts it
-	int count = (int)strlen(&NMEA[0]);
+	int count = (int)strlen(NMEA);
 	NMEA[count-1] = '\r';
 	NMEA[count] = '\n';
 	NMEA[count+1] = '\0';
 	// Parse the data
-	nmea_parse(&parser, &NMEA[0], (int)strlen(&NMEA[0]), info);
+	nmea_parse(&parser, NMEA, (int)strlen(NMEA), info);
 
 	if (info->smask == 0) {
 		//Bad data
@@ -89,7 +89,7 @@ void processNMEA() {
 	// NOTE: Make copy of NMEA and Data for these threads - Don't want them to be overwritten by other threads
 	// Have the individual case function take care of freeing them
 	Args->NMEA = (char *)malloc((strlen(&NMEA[0])+1)*sizeof(char));
-	strcpy(Args->NMEA, &NMEA[0]);
+	strcpy(Args->NMEA, NMEA);
 	Args->info = info;	
 	
 	adamGpsCallbacks->create_thread_cb("adamgps-nmea", updateNMEA, Args);
@@ -140,7 +140,7 @@ static void* doGPS (void* arg) {
 	pthread_mutex_unlock(&mutGPS);
 
 	while (go) {
-		buffer = fgets(&NMEA[0], MAX_NMEA_CHARS, gpsTTY);
+		buffer = fgets(NMEA, MAX_NMEA_CHARS, gpsTTY);
 		if (buffer == NULL) {
 			LOGV("NMEA data read fail, sleeping for 1 sec.");
 			nanosleep(&slp, NULL);
