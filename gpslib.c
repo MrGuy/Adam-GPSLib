@@ -60,10 +60,73 @@ static void updateNMEA(void* arg) {
 	if (adamGpsCallbacks != NULL) {
 		adamGpsCallbacks->nmea_cb(getUTCTime(&(info->utc)), NMEA2, strlen(NMEA2));
 	}
+
+	return;
+}
+
+static void updateRMC(void* arg) {
+	argsCarrier *Args = (argsCarrier*)arg;
+	nmeaINFO *info = Args->info;
+	char* NMEA2 = Args->NMEA;
+	GpsLocation newLoc;
+
+	if (info->sig == 0) {
+		LOGV("No valid fix data.");
+		return;
+	}
+
+	newLoc.size = sizeof(GpsLocation);
+	newLoc.flags = GPS_LOCATION_HAS_LAT_LONG;
+	newLoc.latitude = info->lat;
+	newLoc.longitude = info->lon;
+	newLoc.timestamp = getUTCTime(&(info->utc));
+	LOGV("Lat: %lf Long: %lf", info->lat, info->lon);
+	if (adamGpsCallbacks != NULL) {
+		adamGpsCallbacks->location_cb(&newLoc);
+	}
 	free(info);
 	free(NMEA2);
 	free(arg);
-	return;
+	
+
+}
+
+static void updateGSV(void* arg) {
+	argsCarrier *Args = (argsCarrier*)arg;
+	nmeaINFO *info = Args->info;
+	char* NMEA2 = Args->NMEA;
+	nmeaSATINFO sats = info->satinfo;
+	int num = sats.inview;
+	int count = 0;
+	GpsSvStatus svStatus;
+
+	LOGV("Updating %i sats", num);
+
+	if (num == 0) {
+		return;
+	}
+
+
+	for (count = 0; count < num; count++) {
+		svStatus.sv_list[count].size = sizeof(GpsSvInfo);
+		svStatus.sv_list[count].prn = sats.sat[count].id;
+		svStatus.sv_list[count].snr = sats.sat[count].sig;
+		svStatus.sv_list[count].elevation = sats.sat[count].elv;
+		svStatus.sv_list[count].azimuth = sats.sat[count].azimuth;
+	}
+	
+	svStatus.size = sizeof(GpsSvStatus);
+	svStatus.num_svs = num; 
+	svStatus.ephemeris_mask = 0;
+	svStatus.almanac_mask = 0;
+	svStatus.used_in_fix_mask = 0;
+	if (adamGpsCallbacks != NULL) {
+		adamGpsCallbacks->sv_status_cb(&svStatus);
+	}
+	free(info);
+	free(NMEA2);
+	free(arg);
+
 }
 
 void processNMEA() {
@@ -92,29 +155,43 @@ void processNMEA() {
 	strcpy(Args->NMEA, NMEA);
 	Args->info = info;	
 	
-	adamGpsCallbacks->create_thread_cb("adamgps-nmea", updateNMEA, Args);
+	//adamGpsCallbacks->create_thread_cb("adamgps-nmea", updateNMEA, Args);
 	
-	/*switch (info->smask) {
+	switch (info->smask) {
 	case 1:
 		//< GGA - Essential fix data which provide 3D location and accuracy data.
+		free(Args->info);
+		free(Args->NMEA);
+		free(Args);
 		break;
 	case 2: 
 		//< GSA - GPS receiver operating mode, SVs used for navigation, and DOP values.
+		free(Args->info);
+		free(Args->NMEA);
+		free(Args);
 		break;
 	case 4: 
 		//< GSV - Number of SVs in view, PRN numbers, elevation, azimuth & SNR values.
+		adamGpsCallbacks->create_thread_cb("adamgps-gsv", updateGSV, Args);
 		break;
 	case 8: 
 		//< RMC - Recommended Minimum Specific GPS/TRANSIT Data.
+		adamGpsCallbacks->create_thread_cb("adamgps-loc", updateRMC, Args);
 		break;
 	case 16:
 		//< VTG - Actual track made good and speed over ground.
+		free(Args->info);
+		free(Args->NMEA);
+		free(Args);
 		break;
 	default:
+		free(Args->info);
+		free(Args->NMEA);
+		free(Args);
 		break;
 	}
 
-	LOGV("Successful read: %i", info.smask);*/
+	//LOGV("Successful read: %i", info->smask);
 	
 }
 
