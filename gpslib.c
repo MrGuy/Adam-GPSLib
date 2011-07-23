@@ -63,6 +63,14 @@ typedef struct _nmeaArgs
 //			GPS THREAD		       //
 /////////////////////////////////////////////////////////
 
+static void updateStatus(void* arg) {
+	if (adamGpsCallbacks != NULL) {
+		adamGpsCallbacks->status_cb((GpsStatus*)arg);
+	}
+	free(arg);
+}
+
+
 static GpsUtcTime getUTCTime(nmeaTIME *time) {
 	GpsUtcTime ret = time->year*(31556926);
 	ret += time->mon*(2629743);
@@ -429,7 +437,7 @@ int ret = 0;
 LOGV("Callbacks set");
 adamGpsCallbacks = callbacks;
 adamGpsCallbacks->set_capabilities_cb(0);
-GpsStatus status;
+GpsStatus *status = malloc(sizeof(GpsStatus));
 
 struct stat st;
 if(stat(GPS_TTYPORT, &st) != 0) {
@@ -439,9 +447,9 @@ if(stat(GPS_TTYPORT, &st) != 0) {
 }
 
 
-status.size = sizeof(GpsStatus);
-status.status = GPS_STATUS_ENGINE_ON;
-adamGpsCallbacks->status_cb(&status);
+status->size = sizeof(GpsStatus);
+status->status = GPS_STATUS_ENGINE_ON;
+adamGpsCallbacks->create_thread_cb("adamgps-status", updateStatus, status);
 
 end:
 return ret;
@@ -449,10 +457,10 @@ return ret;
 
 static int gpslib_start() {
 LOGV("Gps start");
-GpsStatus stat;
-stat.size = sizeof(GpsStatus);
-stat.status = GPS_STATUS_SESSION_BEGIN;
-adamGpsCallbacks->status_cb(&stat);
+GpsStatus *stat = malloc(sizeof(GpsStatus));
+stat->size = sizeof(GpsStatus);
+stat->status = GPS_STATUS_SESSION_BEGIN;
+adamGpsCallbacks->create_thread_cb("adamgps-status", updateStatus, stat);
 pthread_mutex_lock(&mutGPS);
 gpsOn = 1;
 pthread_mutex_unlock(&mutGPS);	
@@ -462,10 +470,10 @@ return 0;
 
 static int gpslib_stop() {
 LOGV("GPS stop");
-GpsStatus stat;
-stat.size = sizeof(GpsStatus);
-stat.status = GPS_STATUS_SESSION_END;
-adamGpsCallbacks->status_cb(&stat);
+GpsStatus *stat = malloc(sizeof(GpsStatus));
+stat->size = sizeof(GpsStatus);
+stat->status = GPS_STATUS_SESSION_END;
+adamGpsCallbacks->create_thread_cb("adamgps-status", updateStatus, stat);
 pthread_mutex_lock(&mutGPS);
 gpsOn = 0;
 pthread_mutex_unlock(&mutGPS);
@@ -473,10 +481,10 @@ return 0;
 }
 
 static void gpslib_cleanup() {
-GpsStatus stat;
-stat.size = sizeof(GpsStatus);
-stat.status = GPS_STATUS_ENGINE_OFF;
-adamGpsCallbacks->status_cb(&stat);
+GpsStatus *stat = malloc(sizeof(GpsStatus));
+stat->size = sizeof(GpsStatus);
+stat->status = GPS_STATUS_ENGINE_OFF;
+adamGpsCallbacks->create_thread_cb("adamgps-status", updateStatus, stat);
 LOGV("GPS clean");
 return;
 }
