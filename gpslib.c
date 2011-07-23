@@ -23,11 +23,16 @@
 #define MASK_GSV_MSG2 0x0002
 #define MASK_GSV_MSG3 0x0004
 
+//Mirror the define in nmea/nmea/info.h
+#define NMEA_MAXSATS (12)
+
 #if GPS_DEBUG
-#define LOGV(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+#define LOGV(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
 #else
 #define LOGV(...) ((void)0)
 #endif
+
+#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
 static GpsInterface adamGpsInterface;
 static GpsCallbacks* adamGpsCallbacks;
@@ -39,8 +44,8 @@ GpsSvStatus *storeSV = NULL;
 int svMask = 0;
 pthread_mutex_t mutGSV = PTHREAD_MUTEX_INITIALIZER;
 
-pthread_mutex_t mutLock = PTHREAD_MUTEX_INITIALIZER;
-char goodLock = 0;
+pthread_mutex_t mutUseMask = PTHREAD_MUTEX_INITIALIZER;
+uint32_t useMask = 0;
 
 typedef struct _argsCarrier
 {
@@ -118,6 +123,31 @@ static void updateRMC(void* arg) {
 	free(arg);
 }
 
+static void updateGSA(void* arg) {
+	argsCarrier *Args = (argsCarrier*)arg;
+	nmeaINFO *info = Args->info;
+	char* NMEA2 = Args->NMEA;
+	nmeaGPGSA *pack = malloc(sizeof(nmeaGPGSA));
+	nmea_parse_GPGSA(NMEA2, strlen(NMEA2), pack);
+	int count = 0;
+	useMask = 0;
+	pthread_mutex_lock(&mutUseMask);
+	for (count = 0; count < NMEA_MAXSATS; count++) {
+		if (pack->sat_prn[count] != 0)
+		{
+			LOGV("%i is in use", pack->sat_prn[count]);
+			useMask |= (1 << (pack->sat_prn[count]-1));
+		}
+	}
+	pthread_mutex_unlock(&mutUseMask);
+
+	endRMC:
+	free(pack);
+	free(info);
+	free(NMEA2);
+	free(arg);
+}
+
 static void updateGGA(void* arg) {
 	argsCarrier *Args = (argsCarrier*)arg;
 	nmeaINFO *info = Args->info;
@@ -126,24 +156,11 @@ static void updateGGA(void* arg) {
 	GpsStatus gpsStat;
 
 	gpsStat.size = sizeof(gpsStat);
-	pthread_mutex_lock(&mutLock);
 	if (info->sig == 0) {
 		LOGV("No valid fix data.");
-		if (goodLock == 1) {
-			gpsStat.status = GPS_STATUS_SESSION_END;
-			adamGpsCallbacks->status_cb(&gpsStat);
-			goodLock = 0;
-		}
-		pthread_mutex_unlock(&mutLock);
 		goto endGGA;
 	}
-	
-	if (goodLock == 0) {
-		gpsStat.status = GPS_STATUS_SESSION_BEGIN;
-		adamGpsCallbacks->status_cb(&gpsStat);
-		goodLock = 1;
-	}
-	pthread_mutex_unlock(&mutLock);
+
 	newLoc.size = sizeof(GpsLocation);
 	newLoc.flags = GPS_LOCATION_HAS_LAT_LONG | GPS_LOCATION_HAS_ALTITUDE | GPS_LOCATION_HAS_ACCURACY;
 	newLoc.accuracy = info->HDOP;
@@ -257,7 +274,7 @@ static void updateGSV(void* arg) {
 		break;
 	default:
 		// Huh?
-		LOGV("Logic error!");
+		LOGE("Logic error in GSV! numMessages: %i", numMessages);
 		goto gsvEnd;
 	}
 		
@@ -269,7 +286,9 @@ static void updateGSV(void* arg) {
 	// TODO: Make these accurate
 	svStatus->ephemeris_mask = 0;
 	svStatus->almanac_mask = 0;
-	svStatus->used_in_fix_mask = 0;
+	pthread_mutex_lock(&mutUseMask);
+	svStatus->used_in_fix_mask = useMask;
+	pthread_mutex_unlock(&mutUseMask);
 	if (adamGpsCallbacks != NULL) {
 		adamGpsCallbacks->sv_status_cb(svStatus);
 	}
@@ -305,6 +324,9 @@ void processNMEA() {
 
 	if (info->smask == 0) {
 		//Bad data
+		free(nArgs);
+		free(info);
+		free(Args);
 		return;
 	}
 	// NOTE: Make copy of NMEA and Data for these threads - Don't want them to be overwritten by other threads
@@ -325,9 +347,7 @@ void processNMEA() {
 		break;
 	case 2: 
 		//< GSA - GPS receiver operating mode, SVs used for navigation, and DOP values.
-		free(Args->info);
-		free(Args->NMEA);
-		free(Args);
+		adamGpsCallbacks->create_thread_cb("adamgps-gsa", updateGSA, Args);
 		break;
 	case 4: 
 		//< GSV - Number of SVs in view, PRN numbers, elevation, azimuth & SNR values.
@@ -369,7 +389,7 @@ static void* doGPS (void* arg) {
 	// Open the GPS port
 	gpsTTY = fopen(GPS_TTYPORT, "r");
 	if (gpsTTY == NULL) {
-		LOGV("Failed opening TTY port: %s", GPS_TTYPORT);
+		LOGE("Failed opening TTY port: %s", GPS_TTYPORT);
 		return NULL;
 	}
 	// Obtain mutex lock and check if we're good to go
@@ -393,6 +413,7 @@ static void* doGPS (void* arg) {
 		go = gpsOn;
 		pthread_mutex_unlock(&mutGPS);
 	}
+fclose(gpsTTY);
 return NULL;
 }
 
@@ -408,13 +429,19 @@ int ret = 0;
 LOGV("Callbacks set");
 adamGpsCallbacks = callbacks;
 adamGpsCallbacks->set_capabilities_cb(0);
+GpsStatus status;
 
 struct stat st;
 if(stat(GPS_TTYPORT, &st) != 0) {
 	ret = -1;
-	LOGV("Specified tty port: %s does not exist", GPS_TTYPORT);
+	LOGE("Specified tty port: %s does not exist", GPS_TTYPORT);
 	goto end;
 }
+
+
+status.size = sizeof(GpsStatus);
+status.status = GPS_STATUS_ENGINE_ON;
+adamGpsCallbacks->status_cb(&status);
 
 end:
 return ret;
@@ -424,7 +451,7 @@ static int gpslib_start() {
 LOGV("Gps start");
 GpsStatus stat;
 stat.size = sizeof(GpsStatus);
-stat.status = GPS_STATUS_ENGINE_ON;
+stat.status = GPS_STATUS_SESSION_BEGIN;
 adamGpsCallbacks->status_cb(&stat);
 pthread_mutex_lock(&mutGPS);
 gpsOn = 1;
@@ -437,7 +464,7 @@ static int gpslib_stop() {
 LOGV("GPS stop");
 GpsStatus stat;
 stat.size = sizeof(GpsStatus);
-stat.status = GPS_STATUS_ENGINE_OFF;
+stat.status = GPS_STATUS_SESSION_END;
 adamGpsCallbacks->status_cb(&stat);
 pthread_mutex_lock(&mutGPS);
 gpsOn = 0;
@@ -446,6 +473,10 @@ return 0;
 }
 
 static void gpslib_cleanup() {
+GpsStatus stat;
+stat.size = sizeof(GpsStatus);
+stat.status = GPS_STATUS_ENGINE_OFF;
+adamGpsCallbacks->status_cb(&stat);
 LOGV("GPS clean");
 return;
 }
