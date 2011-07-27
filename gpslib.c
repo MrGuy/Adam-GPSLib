@@ -12,7 +12,7 @@
 #include <math.h>
 #include "nmea/nmea/nmea.h"
 
-#define  GPS_DEBUG  1
+//#define  GPS_DEBUG  1
 
 #define  LOG_TAG  "gps_adam"
 #define GPS_TTYPORT "/dev/ttyHS3"
@@ -138,8 +138,8 @@ static void updateGSA(void* arg) {
 	nmeaGPGSA *pack = malloc(sizeof(nmeaGPGSA));
 	nmea_parse_GPGSA(NMEA2, strlen(NMEA2), pack);
 	int count = 0;
-	useMask = 0;
 	pthread_mutex_lock(&mutUseMask);
+	useMask = 0;
 	for (count = 0; count < NMEA_MAXSATS; count++) {
 		if (pack->sat_prn[count] != 0)
 		{
